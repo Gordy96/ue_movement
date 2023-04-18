@@ -5,8 +5,8 @@
 
 bool UECharacterMovementComponent::FSavedMove::CanCombineWith(const FSavedMovePtr& NewMove, ACharacter* InCharacter, float MaxDelta) const
 {
-	FSavedMove* NewEMove = static_cast<FSavedMove*>(NewMove.Get());
-	if (Saved_bWantsToSprint != NewEMove->Saved_bWantsToSprint) {
+	const FSavedMove* EMove = static_cast<FSavedMove*>(NewMove.Get());
+	if (bSaved_WantsToSprint != EMove->bSaved_WantsToSprint) {
 		return false;
 	}
 	return Super::CanCombineWith(NewMove, InCharacter, MaxDelta);
@@ -19,26 +19,26 @@ void UECharacterMovementComponent::FSavedMove::Clear()
 
 uint8 UECharacterMovementComponent::FSavedMove::GetCompressedFlags() const
 {
-	uint8 flags = Super::GetCompressedFlags();
-	if (Saved_bWantsToSprint) flags |= FLAG_Custom_0;
-	return flags;
+	uint8 Flags = Super::GetCompressedFlags();
+	if (bSaved_WantsToSprint) Flags |= FLAG_Custom_0;
+	return Flags;
 }
 
 void UECharacterMovementComponent::FSavedMove::SetMoveFor(ACharacter* C, float InDeltaTime, FVector const& NewAccel, FNetworkPredictionData_Client_Character& ClientData)
 {
 	Super::SetMoveFor(C, InDeltaTime, NewAccel, ClientData);
-	UECharacterMovementComponent* movement = Cast<UECharacterMovementComponent>(C->GetMovementBase());
+	const UECharacterMovementComponent* Movement = Cast<UECharacterMovementComponent>(C->GetMovementBase());
 
-	Saved_bWantsToSprint = movement->Safe_bWantsToSprint;
-	Saved_bPrevWantsToCrunch = movement->Safe_bPrevWantsToCrouch;
+	bSaved_WantsToSprint = Movement->bSafe_WantsToSprint;
+	bSaved_PrevWantsToCrunch = Movement->bSafe_PrevWantsToCrouch;
 }
 
 void UECharacterMovementComponent::FSavedMove::PrepMoveFor(ACharacter* C)
 {
 	Super::PrepMoveFor(C);
-	UECharacterMovementComponent* movement = Cast<UECharacterMovementComponent>(C->GetMovementBase());
-	movement->Safe_bWantsToSprint = Saved_bWantsToSprint;
-	movement->Safe_bPrevWantsToCrouch = Saved_bPrevWantsToCrunch;
+	UECharacterMovementComponent* Movement = Cast<UECharacterMovementComponent>(C->GetMovementBase());
+	Movement->bSafe_WantsToSprint = bSaved_WantsToSprint;
+	Movement->bSafe_PrevWantsToCrouch = bSaved_PrevWantsToCrunch;
 }
 
 
@@ -54,14 +54,14 @@ FSavedMovePtr UECharacterMovementComponent::FNetworkPredictionData_Client_E::All
 void UECharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
 {
 	Super::UpdateFromCompressedFlags(Flags);
-	Safe_bWantsToSprint = (Flags & FSavedMove_Character::FLAG_Custom_0) != 0;
+	bSafe_WantsToSprint = (Flags & FSavedMove_Character::FLAG_Custom_0) != 0;
 }
 
 void UECharacterMovementComponent::OnMovementUpdated(float DeltaSeconds, const FVector& OldLocation, const FVector& OldVelocity)
 {
 	Super::OnMovementUpdated(DeltaSeconds, OldLocation, OldVelocity);
 	if (MovementMode == MOVE_Walking) {
-		if(Safe_bWantsToSprint) {
+		if(bSafe_WantsToSprint) {
 			MaxWalkSpeed = Sprint_MaxWalkSpeed;
 		}
 		else {
@@ -74,23 +74,23 @@ FNetworkPredictionData_Client* UECharacterMovementComponent::GetPredictionData_C
 {
 	check(PawnOwner != nullptr)
 	if (ClientPredictionData == nullptr) {
-		UECharacterMovementComponent* self = const_cast<UECharacterMovementComponent*>(this);
+		UECharacterMovementComponent* Self = const_cast<UECharacterMovementComponent*>(this);
 
-		self->ClientPredictionData = new FNetworkPredictionData_Client_E(*this);
-		self->ClientPredictionData->MaxSmoothNetUpdateDist = 92.f;
-		self->ClientPredictionData->NoSmoothNetUpdateDist = 140.f;
+		Self->ClientPredictionData = new FNetworkPredictionData_Client_E(*this);
+		Self->ClientPredictionData->MaxSmoothNetUpdateDist = 92.f;
+		Self->ClientPredictionData->NoSmoothNetUpdateDist = 140.f;
 	}
 	return ClientPredictionData;
 }
 
 void UECharacterMovementComponent::Sprint()
 {
-	Safe_bWantsToSprint = true;
+	bSafe_WantsToSprint = true;
 }
 
 void UECharacterMovementComponent::StopSprinting()
 {
-	Safe_bWantsToSprint = false;
+	bSafe_WantsToSprint = false;
 }
 
 void UECharacterMovementComponent::ToggleCrouch()
