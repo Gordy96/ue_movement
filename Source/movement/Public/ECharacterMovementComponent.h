@@ -21,12 +21,20 @@ class MOVEMENT_API UECharacterMovementComponent : public UCharacterMovementCompo
 {
 	GENERATED_BODY()
 
-	class FSavedMove : public FSavedMove_Character
+	class FSavedMove final : public FSavedMove_Character
 	{
 		typedef FSavedMove_Character Super;
+	public:
+		enum ECompressedFlags
+		{
+			FLAG_Sprint			= 0x10,
+		};
 		uint8 bSaved_WantsToSprint : 1;
 		uint8 bSaved_PrevWantsToCrunch : 1;
-	public:
+		uint8 bSaved_WantsToProne : 1;
+
+		FSavedMove();
+		
 		virtual bool CanCombineWith(const FSavedMovePtr& NewMove, ACharacter* InCharacter, float MaxDelta) const override;
 		virtual void Clear() override;
 		virtual uint8 GetCompressedFlags() const override;
@@ -34,7 +42,7 @@ class MOVEMENT_API UECharacterMovementComponent : public UCharacterMovementCompo
 		virtual void PrepMoveFor(ACharacter* C) override;
 	};
 
-	class FNetworkPredictionData_Client_E : public FNetworkPredictionData_Client_Character
+	class FNetworkPredictionData_Client_E final : public FNetworkPredictionData_Client_Character
 	{
 		typedef FNetworkPredictionData_Client_Character Super;
 	public:
@@ -42,26 +50,47 @@ class MOVEMENT_API UECharacterMovementComponent : public UCharacterMovementCompo
 		virtual FSavedMovePtr AllocateNewMove() override;
 	};
 
-	UPROPERTY(EditDefaultsOnly) float Sprint_MaxWalkSpeed;
-	UPROPERTY(EditDefaultsOnly) float Walk_MaxWalkSpeed;
+	UPROPERTY(EditDefaultsOnly) float MaxSprintSpeed = 600.f;
+	UPROPERTY(EditDefaultsOnly) float ProneEnterHoldDuration=0.2f;
+	UPROPERTY(EditDefaultsOnly) float MaxProneSpeed=200.f;
+	UPROPERTY(EditDefaultsOnly) float BreakingDecelerationProning=2500.f;
 
 	UPROPERTY(Transient) AECharacter* OwningCharacter;
+	bool bSafe_WantsToSprint;
+	bool bSafe_PrevWantsToCrouch;
+	bool bSafe_WantsToProne;
+	FTimerHandle TimerHandle_EnterProne;
 
-	bool Safe_bWantsToSprint;
-	bool Safe_bPrevWantsToCrouch;
-
-protected:
-	virtual void InitializeComponent() override;
-public:
-	virtual FNetworkPredictionData_Client* GetPredictionData_Client() const override;
 protected:
 	virtual void UpdateFromCompressedFlags(uint8 Flags) override;
 	virtual void OnMovementUpdated(float DeltaSeconds, const FVector& OldLocation, const FVector& OldVelocity) override;
-public:
-	UFUNCTION(BlueprintCallable) void Sprint();
-	UFUNCTION(BlueprintCallable) void StopSprinting();
-	UFUNCTION(BlueprintCallable) void ToggleCrouch();
+	virtual void UpdateCharacterStateBeforeMovement(float DeltaSeconds) override;
+	virtual void PhysCustom(float deltaTime, int32 Iterations) override;
+	virtual void OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode) override;
 
+private:
+	void TryEnterProne() { bSafe_WantsToProne = true; }
+	UFUNCTION(Server, Reliable) void Server_EnterProne();
+	
+	void EnterProne(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode);
+	void ExitProne();
+	bool CanProne() const;
+	void PhysProne(float deltaTime, int32 Iterations);
+
+public:
+	virtual void InitializeComponent() override;
+	virtual FNetworkPredictionData_Client* GetPredictionData_Client() const override;
+	
+	virtual bool IsMovingOnGround() const override;
+	virtual bool CanCrouchInCurrentState() const override;
+	virtual float GetMaxSpeed() const override;
+	virtual float GetMaxBrakingDeceleration() const override;
+	
 	UFUNCTION(BlueprintPure) bool IsCustomMovementMode(ECustomMovementMode InCustomMovementMode) const;
 	UFUNCTION(BlueprintPure) bool IsMovementMode(EMovementMode InMovementMode) const;
+	
+	UFUNCTION(BlueprintCallable) void Sprint();
+	UFUNCTION(BlueprintCallable) void StopSprinting();
+	UFUNCTION(BlueprintCallable) void EnterCrouch();
+	UFUNCTION(BlueprintCallable) void CrouchReleased();
 };
