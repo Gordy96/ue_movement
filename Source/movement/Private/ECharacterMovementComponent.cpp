@@ -1,5 +1,6 @@
 #include "ECharacterMovementComponent.h"
 #include "ECharacter.h"
+#include "Components/CapsuleComponent.h"
 
 #include "GameFramework/Character.h"
 
@@ -34,18 +35,18 @@ void UECharacterMovementComponent::FSavedMove::SetMoveFor(ACharacter* C, float I
 {
 	Super::SetMoveFor(C, InDeltaTime, NewAccel, ClientData);
 	const UECharacterMovementComponent* Movement = Cast<UECharacterMovementComponent>(C->GetMovementBase());
-	bSaved_WantsToSprint = Movement->bSafe_WantsToSprint;
-	bSaved_PrevWantsToCrunch = Movement->bSafe_PrevWantsToCrouch;
-	bSaved_WantsToProne = Movement->bSafe_WantsToProne;
+	bSaved_WantsToSprint = Movement->bWantsToSprint;
+	bSaved_PrevWantsToCrunch = Movement->bPrevWantsToCrouch;
+	bSaved_WantsToProne = Movement->bWantsToProne;
 }
 
 void UECharacterMovementComponent::FSavedMove::PrepMoveFor(ACharacter* C)
 {
 	Super::PrepMoveFor(C);
 	UECharacterMovementComponent* Movement = Cast<UECharacterMovementComponent>(C->GetMovementBase());
-	Movement->bSafe_WantsToSprint = bSaved_WantsToSprint;
-	Movement->bSafe_PrevWantsToCrouch = bSaved_PrevWantsToCrunch;
-	Movement->bSafe_WantsToProne = bSaved_WantsToProne;
+	Movement->bWantsToSprint = bSaved_WantsToSprint;
+	Movement->bPrevWantsToCrouch = bSaved_PrevWantsToCrunch;
+	Movement->bWantsToProne = bSaved_WantsToProne;
 }
 
 
@@ -60,13 +61,101 @@ FSavedMovePtr UECharacterMovementComponent::FNetworkPredictionData_Client_E::All
 
 void UECharacterMovementComponent::Server_EnterProne_Implementation()
 {
-	bSafe_WantsToProne = true;
+	bWantsToProne = true;
 }
 
-void UECharacterMovementComponent::EnterProne(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode)
+void UECharacterMovementComponent::EnterProne(bool bClientSimulation)
 {
-	bWantsToCrouch = true;
-	FindFloor(UpdatedComponent->GetComponentLocation(), CurrentFloor, true, nullptr);
+	if (!HasValidData())
+	{
+		return;
+	}
+	if (!bClientSimulation && !CanCrouchInCurrentState())
+	{
+		return;
+	}
+	UCapsuleComponent* Capsule = OwningCharacter->GetCapsuleComponent();
+	// See if collision is already at desired size.
+	if (Capsule->GetUnscaledCapsuleHalfHeight() == ProneHalfHeight)
+	{
+		if (!bClientSimulation)
+		{
+			OwningCharacter->bIsProne = true;
+			OwningCharacter->bIsCrouched = false;
+		}
+		//TODO: update with OnStartProne
+		OwningCharacter->OnStartCrouch( 0.f, 0.f );
+		return;
+	}
+
+	if (bClientSimulation && OwningCharacter->GetLocalRole() == ROLE_SimulatedProxy)
+	{
+		// restore collision size before going prone
+		ACharacter* DefaultCharacter = OwningCharacter->GetClass()->GetDefaultObject<ACharacter>();
+		Capsule->SetCapsuleSize(DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleRadius(), DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight());
+		bShrinkProxyCapsule = true;
+	}
+
+	// Change collision size to prone dimensions
+	const float ComponentScale = Capsule->GetShapeScale();
+	const float OldUnscaledHalfHeight = Capsule->GetUnscaledCapsuleHalfHeight();
+	const float OldUnscaledRadius = Capsule->GetUnscaledCapsuleRadius();
+	// Height is not allowed to be smaller than radius.
+	const float ClampedProneHalfHeight = FMath::Max3(0.f, OldUnscaledRadius, ProneHalfHeight);
+	Capsule->SetCapsuleSize(OldUnscaledRadius, ClampedProneHalfHeight);
+	float HalfHeightAdjust = (OldUnscaledHalfHeight - ClampedProneHalfHeight);
+	float ScaledHalfHeightAdjust = HalfHeightAdjust * ComponentScale;
+
+	if( !bClientSimulation )
+	{
+		// Prone to a larger height? (this is rare)
+		if (ClampedProneHalfHeight > OldUnscaledHalfHeight)
+		{
+			FCollisionQueryParams CapsuleParams(SCENE_QUERY_STAT(ProneTrace), false, CharacterOwner);
+			FCollisionResponseParams ResponseParam;
+			InitCollisionParams(CapsuleParams, ResponseParam);
+			const bool bProne = GetWorld()->OverlapBlockingTestByChannel(UpdatedComponent->GetComponentLocation() - FVector(0.f,0.f,ScaledHalfHeightAdjust), FQuat::Identity,
+				UpdatedComponent->GetCollisionObjectType(), GetPawnCapsuleCollisionShape(SHRINK_None), CapsuleParams, ResponseParam);
+			// If prone, cancel
+			if( bProne )
+			{
+				Capsule->SetCapsuleSize(OldUnscaledRadius, OldUnscaledHalfHeight);
+				return;
+			}
+		}
+
+		if (bCrouchMaintainsBaseLocation)
+		{
+			// Intentionally not using MoveUpdatedComponent, where a horizontal plane constraint would prevent the base of the capsule from staying at the same spot.
+			UpdatedComponent->MoveComponent(FVector(0.f, 0.f, -ScaledHalfHeightAdjust), UpdatedComponent->GetComponentQuat(), true, nullptr, EMoveComponentFlags::MOVECOMP_NoFlags, ETeleportType::TeleportPhysics);
+		}
+
+		OwningCharacter->bIsProne = true;
+		OwningCharacter->bIsCrouched = false;
+	}
+
+	bForceNextFloorCheck = true;
+
+	// OnStartCrouch takes the change from the Default size, not the current one (though they are usually the same).
+	const float MeshAdjust = ScaledHalfHeightAdjust;
+	ACharacter* DefaultCharacter = CharacterOwner->GetClass()->GetDefaultObject<ACharacter>();
+	HalfHeightAdjust = (DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight() - ClampedProneHalfHeight);
+	ScaledHalfHeightAdjust = HalfHeightAdjust * ComponentScale;
+
+	AdjustProxyCapsuleSize();
+	//TODO: update with OnStartProne
+	CharacterOwner->OnStartCrouch( HalfHeightAdjust, ScaledHalfHeightAdjust );
+
+	// Don't smooth this change in mesh position
+	if ((bClientSimulation && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy) || (IsNetMode(NM_ListenServer) && CharacterOwner->GetRemoteRole() == ROLE_AutonomousProxy))
+	{
+		FNetworkPredictionData_Client_Character* ClientData = GetPredictionData_Client_Character();
+		if (ClientData)
+		{
+			ClientData->MeshTranslationOffset -= FVector(0.f, 0.f, MeshAdjust);
+			ClientData->OriginalMeshTranslationOffset = ClientData->MeshTranslationOffset;
+		}
+	}
 }
 
 void UECharacterMovementComponent::ExitProne()
@@ -271,28 +360,28 @@ void UECharacterMovementComponent::PhysProne(float deltaTime, int32 Iterations)
 void UECharacterMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
 {
 	Super::UpdateFromCompressedFlags(Flags);
-	bSafe_WantsToSprint = (Flags & FSavedMove::FLAG_Sprint) != 0;
+	bWantsToSprint = (Flags & FSavedMove::FLAG_Sprint) != 0;
 }
 
 void UECharacterMovementComponent::OnMovementUpdated(float DeltaSeconds, const FVector& OldLocation, const FVector& OldVelocity)
 {
 	Super::OnMovementUpdated(DeltaSeconds, OldLocation, OldVelocity);
-	bSafe_PrevWantsToCrouch = bWantsToCrouch;
+	bPrevWantsToCrouch = bWantsToCrouch;
 }
 
 void UECharacterMovementComponent::UpdateCharacterStateBeforeMovement(float DeltaSeconds)
 {
-	if (bSafe_WantsToProne)
+	if (bWantsToProne && !IsCustomMovementMode(CMOVE_Prone) && CanProne())
 	{
-		if (CanProne())
+		SetMovementMode(MOVE_Custom, CMOVE_Prone);
+		if (!CharacterOwner->HasAuthority())
 		{
-			SetMovementMode(MOVE_Custom, CMOVE_Prone);
-			if (!CharacterOwner->HasAuthority()) Server_EnterProne();
+			Server_EnterProne();
 		}
-		bSafe_WantsToProne = false;
 	}
-	if (IsCustomMovementMode(CMOVE_Prone) && !bWantsToCrouch)
+	if (IsCustomMovementMode(CMOVE_Prone) && !bWantsToProne)
 	{
+		bWantsToProne = false;
 		SetMovementMode(MOVE_Walking);
 	}
 	Super::UpdateCharacterStateBeforeMovement(DeltaSeconds);
@@ -317,7 +406,7 @@ void UECharacterMovementComponent::OnMovementModeChanged(EMovementMode PreviousM
 
 	if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == CMOVE_Prone) ExitProne();
 	
-	if (IsCustomMovementMode(CMOVE_Prone)) EnterProne(PreviousMovementMode, (ECustomMovementMode)PreviousCustomMode);
+	if (IsCustomMovementMode(CMOVE_Prone)) EnterProne(false);
 }
 
 bool UECharacterMovementComponent::IsMovingOnGround() const
@@ -325,22 +414,44 @@ bool UECharacterMovementComponent::IsMovingOnGround() const
 	return Super::IsMovingOnGround() || IsCustomMovementMode(CMOVE_Prone);
 }
 
-bool UECharacterMovementComponent::CanCrouchInCurrentState() const
-{
-	return Super::CanCrouchInCurrentState() && IsMovingOnGround();
-}
-
 float UECharacterMovementComponent::GetMaxSpeed() const
 {
-	if (IsMovementMode(MOVE_Walking) && bSafe_WantsToSprint && !IsCrouching()) return MaxSprintSpeed;
-	if (!IsMovementMode(MOVE_Custom)) return Super::GetMaxSpeed();
-	switch (CustomMovementMode)
+	switch(MovementMode)
 	{
-	case CMOVE_Prone:
-		return MaxProneSpeed;
+	case MOVE_Walking:
+	case MOVE_NavWalking:
+		if (IsCrouching())
+		{
+			return MaxWalkSpeedCrouched;
+		}
+		if (bWantsToSprint)
+		{
+			return MaxSprintSpeed;
+		}
+		return MaxWalkSpeed;
+	case MOVE_Falling:
+		return MaxWalkSpeed;
+	case MOVE_Swimming:
+		return MaxSwimSpeed;
+	case MOVE_Flying:
+		return MaxFlySpeed;
+	case MOVE_Custom:
+		switch (CustomMovementMode)
+		{
+		case CMOVE_Prone:
+			return MaxProneSpeed;
+		default:
+			return MaxCustomMovementSpeed;
+		}
+	case MOVE_None:
 	default:
-		return -1.f;
+		return Super::GetMaxSpeed();
 	}
+}
+
+float UECharacterMovementComponent::GetMaxAcceleration() const
+{
+	return Super::GetMaxAcceleration();
 }
 
 float UECharacterMovementComponent::GetMaxBrakingDeceleration() const
@@ -349,7 +460,7 @@ float UECharacterMovementComponent::GetMaxBrakingDeceleration() const
 	switch (CustomMovementMode)
 	{
 	case CMOVE_Prone:
-		return BreakingDecelerationProning;
+		return BreakingDecelerationProne;
 	default:
 		return -1.f;
 	}
@@ -368,25 +479,28 @@ FNetworkPredictionData_Client* UECharacterMovementComponent::GetPredictionData_C
 	return ClientPredictionData;
 }
 
-void UECharacterMovementComponent::Sprint()
+void UECharacterMovementComponent::SprintPressed()
 {
-	bSafe_WantsToSprint = true;
+	bWantsToSprint = true;
 }
 
-void UECharacterMovementComponent::StopSprinting()
+void UECharacterMovementComponent::SprintReleased()
 {
-	bSafe_WantsToSprint = false;
+	bWantsToSprint = false;
 }
 
-void UECharacterMovementComponent::EnterCrouch()
+void UECharacterMovementComponent::CrouchPressed()
 {
-	bWantsToCrouch = !bWantsToCrouch;
 	GetWorld()->GetTimerManager().SetTimer(TimerHandle_EnterProne, this, &UECharacterMovementComponent::TryEnterProne, ProneEnterHoldDuration);
 }
 
 void UECharacterMovementComponent::CrouchReleased()
 {
-	GetWorld()->GetTimerManager().ClearTimer(TimerHandle_EnterProne);
+	if (!IsCustomMovementMode(CMOVE_Prone))
+	{
+		bWantsToCrouch = !bWantsToCrouch;
+		GetWorld()->GetTimerManager().ClearTimer(TimerHandle_EnterProne);
+	}
 }
 
 bool UECharacterMovementComponent::IsCustomMovementMode(ECustomMovementMode InCustomMovementMode) const

@@ -50,15 +50,7 @@ class MOVEMENT_API UECharacterMovementComponent : public UCharacterMovementCompo
 		virtual FSavedMovePtr AllocateNewMove() override;
 	};
 
-	UPROPERTY(EditDefaultsOnly) float MaxSprintSpeed = 600.f;
-	UPROPERTY(EditDefaultsOnly) float ProneEnterHoldDuration=0.2f;
-	UPROPERTY(EditDefaultsOnly) float MaxProneSpeed=200.f;
-	UPROPERTY(EditDefaultsOnly) float BreakingDecelerationProning=2500.f;
-
 	UPROPERTY(Transient) AECharacter* OwningCharacter;
-	bool bSafe_WantsToSprint;
-	bool bSafe_PrevWantsToCrouch;
-	bool bSafe_WantsToProne;
 	FTimerHandle TimerHandle_EnterProne;
 
 protected:
@@ -69,12 +61,8 @@ protected:
 	virtual void OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode) override;
 
 private:
-	void TryEnterProne() { bSafe_WantsToProne = true; }
+	void TryEnterProne() { bWantsToProne = true; }
 	UFUNCTION(Server, Reliable) void Server_EnterProne();
-	
-	void EnterProne(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode);
-	void ExitProne();
-	bool CanProne() const;
 	void PhysProne(float deltaTime, int32 Iterations);
 
 public:
@@ -82,15 +70,38 @@ public:
 	virtual FNetworkPredictionData_Client* GetPredictionData_Client() const override;
 	
 	virtual bool IsMovingOnGround() const override;
-	virtual bool CanCrouchInCurrentState() const override;
 	virtual float GetMaxSpeed() const override;
+	virtual float GetMaxAcceleration() const override;
 	virtual float GetMaxBrakingDeceleration() const override;
+	
+	UPROPERTY(Category="Character Movement (General Settings)", VisibleInstanceOnly, BlueprintReadOnly)
+	bool bWantsToSprint;
+	UPROPERTY(Category="Character Movement (General Settings)", VisibleInstanceOnly, BlueprintReadOnly)
+	bool bPrevWantsToCrouch;
+	UPROPERTY(Category="Character Movement (General Settings)", VisibleInstanceOnly, BlueprintReadOnly)
+	bool bWantsToProne;
+
+	void EnterProne(bool bClientSimulation);
+	void ExitProne();
+	bool CanProne() const;
+	
+	UPROPERTY(Category="Character Movement (General Settings)", EditDefaultsOnly, meta=(ClampMin="0", UIMin="0", ForceUnits=cm))
+	float ProneHalfHeight = 30.f;
+	
+	UPROPERTY(Category="Character Movement (General Settings)", EditDefaultsOnly)
+	float MaxSprintSpeed = 600.f;
+	UPROPERTY(Category="Character Movement (General Settings)", EditDefaultsOnly)
+	float ProneEnterHoldDuration=0.2f;
+	UPROPERTY(Category="Character Movement (General Settings)", EditDefaultsOnly)
+	float MaxProneSpeed=200.f;
+	UPROPERTY(Category="Character Movement (General Settings)", EditDefaultsOnly)
+	float BreakingDecelerationProne=2500.f;
 	
 	UFUNCTION(BlueprintPure) bool IsCustomMovementMode(ECustomMovementMode InCustomMovementMode) const;
 	UFUNCTION(BlueprintPure) bool IsMovementMode(EMovementMode InMovementMode) const;
 	
-	UFUNCTION(BlueprintCallable) void Sprint();
-	UFUNCTION(BlueprintCallable) void StopSprinting();
-	UFUNCTION(BlueprintCallable) void EnterCrouch();
+	UFUNCTION(BlueprintCallable) void SprintPressed();
+	UFUNCTION(BlueprintCallable) void SprintReleased();
+	UFUNCTION(BlueprintCallable) void CrouchPressed();
 	UFUNCTION(BlueprintCallable) void CrouchReleased();
 };
